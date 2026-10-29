@@ -1,5 +1,5 @@
 
-name: Deploy Coach Tactics Pro to GitHub Pages
+name: Deploy ZIP Project to GitHub Pages
 
 on:
   push:
@@ -24,42 +24,88 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Find project directory
-        id: app
+      - name: Prepare project
+        id: project
         run: |
-          FILE=$(find . -maxdepth 5 -type f -name package.json \
-            -not -path '*/node_modules/*' | head -n 1)
+          mkdir -p extracted
 
-          if [ -z "$FILE" ]; then
-            echo "ERROR: package.json was not found."
-            echo "Check the uploaded project files."
-            exit 1
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" \
+            -not -path "./extracted/*" | head -n 1)
+
+          if [ -n "$ZIP_FILE" ]; then
+            echo "ZIP found: $ZIP_FILE"
+            unzip -q "$ZIP_FILE" -d extracted
+          else
+            echo "No ZIP found. Checking repository files."
+            cp -R . extracted/source
           fi
 
-          DIR=$(dirname "$FILE")
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Project directory: $DIR"
+          PACKAGE=$(find extracted -type f -name package.json \
+            -not -path "*/node_modules/*" | head -n 1)
+
+          if [ -n "$PACKAGE" ]; then
+            APP_DIR=$(dirname "$PACKAGE")
+            echo "type=node" >> "$GITHUB_OUTPUT"
+            echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          else
+            INDEX=$(find extracted -type f -name index.html | head -n 1)
+
+            if [ -z "$INDEX" ]; then
+              echo "ERROR: No package.json or index.html found."
+              exit 1
+            fi
+
+            APP_DIR=$(dirname "$INDEX")
+            echo "type=static" >> "$GITHUB_OUTPUT"
+            echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Project directory: $APP_DIR"
 
       - name: Setup Node.js
+        if: steps.project.outputs.type == 'node'
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
       - name: Install dependencies
-        working-directory: ${{ steps.app.outputs.dir }}
+        if: steps.project.outputs.type == 'node'
+        working-directory: ${{ steps.project.outputs.dir }}
         run: npm install
 
       - name: Build application
-        working-directory: ${{ steps.app.outputs.dir }}
+        if: steps.project.outputs.type == 'node'
+        working-directory: ${{ steps.project.outputs.dir }}
         run: npm run build
+
+      - name: Select deployment folder
+        id: output
+        run: |
+          if [ "${{ steps.project.outputs.type }}" = "node" ]; then
+            APP="${{ steps.project.outputs.dir }}"
+
+            if [ -d "$APP/dist" ]; then
+              OUT="$APP/dist"
+            elif [ -d "$APP/build" ]; then
+              OUT="$APP/build"
+            else
+              echo "ERROR: Build output folder not found."
+              exit 1
+            fi
+          else
+            OUT="${{ steps.project.outputs.dir }}"
+          fi
+
+          echo "dir=$OUT" >> "$GITHUB_OUTPUT"
+          echo "Deploying: $OUT"
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload production files
+      - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ steps.app.outputs.dir }}/dist
+          path: ${{ steps.output.outputs.dir }}
 
   deploy:
     needs: build
@@ -70,6 +116,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy to GitHub Pages
+      - name: Publish website
         id: deployment
         uses: actions/deploy-pages@v4
