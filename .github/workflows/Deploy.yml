@@ -73,14 +73,14 @@ jobs:
             echo "Detected static website: $APP_DIR"
           fi
 
-      # 3. Setup Node
+      # 3. Setup Node.js
       - name: Setup Node.js
         if: steps.project.outputs.type == 'node'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      # 4. Use stable npm version
+      # 4. Setup stable npm
       - name: Setup stable npm
         if: steps.project.outputs.type == 'node'
         run: |
@@ -88,7 +88,7 @@ jobs:
           node --version
           npm --version
 
-      # 5. Install dependencies with retry
+      # 5. Install project dependencies
       - name: Install dependencies
         if: steps.project.outputs.type == 'node'
         working-directory: ${{ steps.project.outputs.dir }}
@@ -104,11 +104,9 @@ jobs:
               --no-audit \
               --no-fund \
               --prefer-online; then
-              echo "Dependencies installed successfully."
+              echo "Dependencies installed."
               exit 0
             fi
-
-            echo "Installation failed."
 
             if [ "$attempt" -lt 3 ]; then
               npm cache clean --force || true
@@ -116,12 +114,29 @@ jobs:
             fi
           done
 
-          echo "ERROR: npm installation failed after 3 attempts."
+          echo "ERROR: Dependencies installation failed."
           exit 1
         env:
           CI: true
 
-      # 6. Build application
+      # 6. Install TypeScript compiler
+      - name: Install TypeScript
+        if: steps.project.outputs.type == 'node'
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          npm install --no-save --legacy-peer-deps \
+            --no-audit --no-fund typescript@5
+
+          npx tsc --version
+
+      # 7. Verify build command
+      - name: Verify project scripts
+        if: steps.project.outputs.type == 'node'
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          npm run
+
+      # 8. Build application
       - name: Build application
         if: steps.project.outputs.type == 'node'
         working-directory: ${{ steps.project.outputs.dir }}
@@ -129,7 +144,7 @@ jobs:
         env:
           CI: true
 
-      # 7. Select output directory
+      # 9. Select deployment directory
       - name: Select deployment directory
         id: output
         shell: bash
@@ -152,24 +167,24 @@ jobs:
           fi
 
           if [ ! -f "$OUT/index.html" ]; then
-            echo "ERROR: index.html not found in output directory."
+            echo "ERROR: index.html not found."
             exit 1
           fi
 
           echo "dir=$OUT" >> "$GITHUB_OUTPUT"
-          echo "Deployment directory: $OUT"
+          echo "Deploying: $OUT"
 
-      # 8. Configure GitHub Pages
+      # 10. Setup GitHub Pages
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
 
-      # 9. Upload website
+      # 11. Upload website
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ${{ steps.output.outputs.dir }}
 
-  # 10. Deploy
+  # 12. Deploy website
   deploy:
     needs: build
     runs-on: ubuntu-latest
