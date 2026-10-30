@@ -1,5 +1,4 @@
-
-name: Coach Tactics Pro - Build and Deploy
+name: Deploy Coach Tactics Pro
 
 on:
   push:
@@ -13,187 +12,169 @@ permissions:
   id-token: write
 
 concurrency:
-  group: github-pages
+  group: pages
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      # 1. Download repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # 2. Extract ZIP and detect project
-      - name: Extract and detect project
-        id: project
-        shell: bash
-        run: |
-          set -e
-
-          mkdir -p "$RUNNER_TEMP/project"
-
-          ZIP_FILE=$(find . -maxdepth 3 -type f \
-            -iname "*.zip" \
-            -not -path "./.git/*" | head -n 1)
-
-          if [ -n "$ZIP_FILE" ]; then
-            echo "Found ZIP: $ZIP_FILE"
-            unzip -oq "$ZIP_FILE" -d "$RUNNER_TEMP/project"
-          else
-            echo "No ZIP found. Using repository files."
-            cp -R . "$RUNNER_TEMP/project/"
-          fi
-
-          PACKAGE=$(find "$RUNNER_TEMP/project" \
-            -type f -name package.json \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.git/*" | head -n 1)
-
-          if [ -n "$PACKAGE" ]; then
-            APP_DIR=$(dirname "$PACKAGE")
-            echo "type=node" >> "$GITHUB_OUTPUT"
-            echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-            echo "Detected Node project: $APP_DIR"
-          else
-            INDEX=$(find "$RUNNER_TEMP/project" \
-              -type f -name index.html \
-              -not -path "*/node_modules/*" \
-              -not -path "*/.git/*" | head -n 1)
-
-            if [ -z "$INDEX" ]; then
-              echo "ERROR: No package.json or index.html found."
-              exit 1
-            fi
-
-            APP_DIR=$(dirname "$INDEX")
-            echo "type=static" >> "$GITHUB_OUTPUT"
-            echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-            echo "Detected static website: $APP_DIR"
-          fi
-
-      # 3. Setup Node.js
-      - name: Setup Node.js
-        if: steps.project.outputs.type == 'node'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      # 4. Setup stable npm
-      - name: Setup stable npm
-        if: steps.project.outputs.type == 'node'
-        run: |
-          npm install -g npm@10.8.2
-          node --version
-          npm --version
-
-      # 5. Install project dependencies
-      - name: Install dependencies
-        if: steps.project.outputs.type == 'node'
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -e
-
-          for attempt in 1 2 3; do
-            echo "Installation attempt $attempt"
-
-            if npm install \
-              --legacy-peer-deps \
-              --no-audit \
-              --no-fund \
-              --prefer-online; then
-              echo "Dependencies installed."
-              exit 0
-            fi
-
-            if [ "$attempt" -lt 3 ]; then
-              npm cache clean --force || true
-              sleep 5
-            fi
-          done
-
-          echo "ERROR: Dependencies installation failed."
-          exit 1
-        env:
-          CI: true
-
-      # 6. Install TypeScript compiler
-      - name: Install TypeScript
-        if: steps.project.outputs.type == 'node'
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          npm install --no-save --legacy-peer-deps \
-            --no-audit --no-fund typescript@5
-
-          npx tsc --version
-
-      # 7. Verify build command
-      - name: Verify project scripts
-        if: steps.project.outputs.type == 'node'
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: |
-          npm run
-
-      # 8. Build application
-      - name: Build application
-        if: steps.project.outputs.type == 'node'
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: npm run build
-        env:
-          CI: true
-
-      # 9. Select deployment directory
-      - name: Select deployment directory
-        id: output
-        shell: bash
-        run: |
-          set -e
-
-          APP="${{ steps.project.outputs.dir }}"
-
-          if [ "${{ steps.project.outputs.type }}" = "node" ]; then
-            if [ -d "$APP/dist" ]; then
-              OUT="$APP/dist"
-            elif [ -d "$APP/build" ]; then
-              OUT="$APP/build"
-            else
-              echo "ERROR: dist or build directory not found."
-              exit 1
-            fi
-          else
-            OUT="$APP"
-          fi
-
-          if [ ! -f "$OUT/index.html" ]; then
-            echo "ERROR: index.html not found."
-            exit 1
-          fi
-
-          echo "dir=$OUT" >> "$GITHUB_OUTPUT"
-          echo "Deploying: $OUT"
-
-      # 10. Setup GitHub Pages
-      - name: Setup GitHub Pages
-        uses: actions/configure-pages@v5
-
-      # 11. Upload website
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ${{ steps.output.outputs.dir }}
-
-  # 12. Deploy website
   deploy:
-    needs: build
-    runs-on: ubuntu-latest
-
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
+    runs-on: ubuntu-latest
+
     steps:
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. Configure GitHub Pages
+      # ============================================================
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      # ============================================================
+      # 3. Find and extract project ZIP
+      # ============================================================
+      - name: Find and extract project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p extracted
+
+          echo "========================================"
+          echo "Repository root:"
+          echo "========================================"
+          pwd
+          ls -lah
+
+          echo ""
+          echo "========================================"
+          echo "ZIP files:"
+          echo "========================================"
+          find . -maxdepth 2 -type f -iname "*.zip" -print
+
+          ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo ""
+            echo "ERROR: No ZIP file found in repository."
+            exit 1
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "Selected ZIP:"
+          echo "$ZIP_FILE"
+          echo "========================================"
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+          echo ""
+          echo "========================================"
+          echo "Extracted project:"
+          echo "========================================"
+          find extracted -maxdepth 3 -type f | head -n 100
+
+      # ============================================================
+      # 4. Locate index.html
+      # ============================================================
+      - name: Locate website
+        shell: bash
+        run: |
+          set -e
+
+          echo "Searching for index.html..."
+
+          INDEX_FILE=$(find extracted -type f -name "index.html" | head -n 1)
+
+          if [ -z "$INDEX_FILE" ]; then
+            echo "ERROR: index.html not found inside ZIP."
+            exit 1
+          fi
+
+          SOURCE=$(dirname "$INDEX_FILE")
+
+          echo "index.html found:"
+          echo "$INDEX_FILE"
+
+          echo "Website source:"
+          echo "$SOURCE"
+
+          echo "$SOURCE" > website_source.txt
+
+      # ============================================================
+      # 5. Prepare website
+      # ============================================================
+      - name: Prepare website
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p public
+
+          SOURCE=$(cat website_source.txt)
+
+          echo "Publishing from:"
+          echo "$SOURCE"
+
+          cp -R "$SOURCE"/. public/
+
+          echo ""
+          echo "========================================"
+          echo "Published files:"
+          echo "========================================"
+
+          find public -maxdepth 3 -type f -print
+
+          echo ""
+          ls -lah public/
+
+      # ============================================================
+      # 6. Verify website
+      # ============================================================
+      - name: Verify website
+        shell: bash
+        run: |
+          set -e
+
+          test -f public/index.html
+
+          echo "index.html found successfully."
+
+          echo ""
+          echo "Checking critical application files..."
+
+          if [ -f public/modules/auth.js ]; then
+            echo "OK: modules/auth.js"
+          else
+            echo "WARNING: modules/auth.js not found"
+          fi
+
+          if [ -f public/modules/supabase.js ]; then
+            echo "OK: modules/supabase.js"
+          else
+            echo "WARNING: modules/supabase.js not found"
+          fi
+
+          echo ""
+          echo "Website verification completed."
+
+      # ============================================================
+      # 7. Upload GitHub Pages artifact
+      # ============================================================
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      # ============================================================
+      # 8. Deploy
+      # ============================================================
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
