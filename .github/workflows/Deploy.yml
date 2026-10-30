@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Extract ZIP and locate project
+      # 2. Extract ZIP
       - name: Extract project ZIP
         id: project
         shell: bash
@@ -40,14 +40,11 @@ jobs:
             -not -path "./.git/*" | head -n 1)
 
           if [ -n "$ZIP_FILE" ]; then
-            echo "ZIP found: $ZIP_FILE"
+            echo "Extracting: $ZIP_FILE"
             unzip -oq "$ZIP_FILE" -d "$PROJECT_DIR"
           else
-            echo "No ZIP found. Using repository files."
             cp -R . "$PROJECT_DIR/"
           fi
-
-          echo "Searching for package.json..."
 
           PACKAGE=$(find "$PROJECT_DIR" -type f \
             -name "package.json" \
@@ -57,13 +54,13 @@ jobs:
             APP_DIR=$(dirname "$PACKAGE")
             echo "type=node" >> "$GITHUB_OUTPUT"
             echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-            echo "Project found: $APP_DIR"
+            echo "Project: $APP_DIR"
           else
             INDEX=$(find "$PROJECT_DIR" -type f \
               -name "index.html" | head -n 1)
 
             if [ -z "$INDEX" ]; then
-              echo "ERROR: No package.json or index.html found."
+              echo "ERROR: No project found."
               exit 1
             fi
 
@@ -79,8 +76,8 @@ jobs:
         with:
           node-version: 22
 
-      # 4. Setup stable npm
-      - name: Setup stable npm
+      # 4. Setup npm
+      - name: Setup npm
         if: steps.project.outputs.type == 'node'
         run: |
           npm install -g npm@10.8.2
@@ -93,39 +90,58 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
           npm install \
+            --include=dev \
             --legacy-peer-deps \
             --no-audit \
             --no-fund
         env:
           CI: true
 
-      # 6. Install missing build dependencies
+      # 6. Install correct build dependencies
       - name: Install build dependencies
         if: steps.project.outputs.type == 'node'
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
+          set -e
+
           npm install --no-save \
+            --include=dev \
+            --package-lock=false \
             --legacy-peer-deps \
             --no-audit \
             --no-fund \
-            typescript@5 \
-            vite \
-            vite-plugin-pwa \
-            vitest
+            typescript@5.8.3 \
+            vite@^6 \
+            vite-plugin-pwa@^0.21 \
+            vitest@^3
 
-      # 7. Verify dependencies
-      - name: Verify dependencies
+      # 7. Verify actual compiler and packages
+      - name: Verify build tools
         if: steps.project.outputs.type == 'node'
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
+          set -e
+
           echo "Checking TypeScript..."
-          npx tsc --version
+
+          test -f node_modules/typescript/bin/tsc
+          node node_modules/typescript/bin/tsc --version
 
           echo "Checking Vite..."
-          npx vite --version
 
-          echo "Checking required packages..."
-          npm ls vite vite-plugin-pwa vitest typescript --depth=0
+          test -f node_modules/vite/bin/vite.js
+          node node_modules/vite/bin/vite.js --version
+
+          echo "Checking PWA..."
+
+          node -e "console.log(require.resolve('vite-plugin-pwa'))"
+
+          echo "Checking Vitest..."
+
+          node -e "console.log(require.resolve('vitest/config'))"
+
+          echo "All build tools are installed."
 
       # 8. Build application
       - name: Build application
@@ -138,20 +154,22 @@ jobs:
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
 
           echo "Repository: $REPO_NAME"
-          echo "Base path: /$REPO_NAME/"
+          echo "Base: /$REPO_NAME/"
 
-          npm run build -- --base="/$REPO_NAME/"
+          echo "Running TypeScript compiler..."
 
-          if [ ! -f dist/index.html ]; then
-            echo "ERROR: dist/index.html not found."
-            exit 1
-          fi
+          node node_modules/typescript/bin/tsc -b
 
-          echo "Build completed successfully."
-        env:
-          CI: true
+          echo "Building Vite..."
 
-      # 9. Prepare deployment
+          node node_modules/vite/bin/vite.js build \
+            --base="/$REPO_NAME/"
+
+          test -f dist/index.html
+
+          echo "BUILD SUCCESSFUL"
+
+      # 9. Prepare website
       - name: Prepare deployment
         id: output
         shell: bash
@@ -169,19 +187,16 @@ jobs:
             SOURCE="$APP_DIR"
           fi
 
-          if [ ! -f "$SOURCE/index.html" ]; then
-            echo "ERROR: index.html not found."
-            exit 1
-          fi
+          test -f "$SOURCE/index.html"
 
           cp -R "$SOURCE"/. "$OUTPUT"/
 
-          echo "Deployment files:"
+          echo "Published files:"
           find "$OUTPUT" -maxdepth 3 -type f
 
           echo "dir=$OUTPUT" >> "$GITHUB_OUTPUT"
 
-      # 10. Configure GitHub Pages
+      # 10. Configure Pages
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
@@ -191,7 +206,7 @@ jobs:
         with:
           path: ${{ steps.output.outputs.dir }}
 
-  # 12. Deploy website
+  # 12. Deploy
   deploy:
     needs: build
     runs-on: ubuntu-latest
