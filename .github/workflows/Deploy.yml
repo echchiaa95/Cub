@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Find and extract ZIP
+      # 2. Extract ZIP and locate project
       - name: Extract project ZIP
         id: project
         shell: bash
@@ -35,19 +35,19 @@ jobs:
           PROJECT_DIR="$RUNNER_TEMP/coach-project"
           mkdir -p "$PROJECT_DIR"
 
-          ZIP_FILE=$(find . -type f -iname "*.zip" \
+          ZIP_FILE=$(find . -maxdepth 3 -type f \
+            -iname "*.zip" \
             -not -path "./.git/*" | head -n 1)
 
           if [ -n "$ZIP_FILE" ]; then
-            echo "Extracting: $ZIP_FILE"
+            echo "ZIP found: $ZIP_FILE"
             unzip -oq "$ZIP_FILE" -d "$PROJECT_DIR"
           else
             echo "No ZIP found. Using repository files."
             cp -R . "$PROJECT_DIR/"
           fi
 
-          echo "Project files:"
-          find "$PROJECT_DIR" -maxdepth 3 -type f | head -n 100
+          echo "Searching for package.json..."
 
           PACKAGE=$(find "$PROJECT_DIR" -type f \
             -name "package.json" \
@@ -57,11 +57,10 @@ jobs:
             APP_DIR=$(dirname "$PACKAGE")
             echo "type=node" >> "$GITHUB_OUTPUT"
             echo "dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-            echo "Found application: $APP_DIR"
+            echo "Project found: $APP_DIR"
           else
             INDEX=$(find "$PROJECT_DIR" -type f \
-              -name "index.html" \
-              -not -path "*/node_modules/*" | head -n 1)
+              -name "index.html" | head -n 1)
 
             if [ -z "$INDEX" ]; then
               echo "ERROR: No package.json or index.html found."
@@ -78,9 +77,9 @@ jobs:
         if: steps.project.outputs.type == 'node'
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      # 4. Setup npm
+      # 4. Setup stable npm
       - name: Setup stable npm
         if: steps.project.outputs.type == 'node'
         run: |
@@ -88,8 +87,8 @@ jobs:
           node --version
           npm --version
 
-      # 5. Install dependencies
-      - name: Install dependencies
+      # 5. Install project dependencies
+      - name: Install project dependencies
         if: steps.project.outputs.type == 'node'
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
@@ -100,14 +99,35 @@ jobs:
         env:
           CI: true
 
-      # 6. Install TypeScript
-      - name: Install TypeScript compiler
+      # 6. Install missing build dependencies
+      - name: Install build dependencies
         if: steps.project.outputs.type == 'node'
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          npm install -g typescript@5
-          tsc --version
+          npm install --no-save \
+            --legacy-peer-deps \
+            --no-audit \
+            --no-fund \
+            typescript@5 \
+            vite \
+            vite-plugin-pwa \
+            vitest
 
-      # 7. Build Vite application
+      # 7. Verify dependencies
+      - name: Verify dependencies
+        if: steps.project.outputs.type == 'node'
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          echo "Checking TypeScript..."
+          npx tsc --version
+
+          echo "Checking Vite..."
+          npx vite --version
+
+          echo "Checking required packages..."
+          npm ls vite vite-plugin-pwa vitest typescript --depth=0
+
+      # 8. Build application
       - name: Build application
         if: steps.project.outputs.type == 'node'
         working-directory: ${{ steps.project.outputs.dir }}
@@ -117,13 +137,13 @@ jobs:
 
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
 
-          echo "GitHub repository: $REPO_NAME"
-          echo "Building with base path: /$REPO_NAME/"
+          echo "Repository: $REPO_NAME"
+          echo "Base path: /$REPO_NAME/"
 
           npm run build -- --base="/$REPO_NAME/"
 
           if [ ! -f dist/index.html ]; then
-            echo "ERROR: dist/index.html was not generated."
+            echo "ERROR: dist/index.html not found."
             exit 1
           fi
 
@@ -131,16 +151,17 @@ jobs:
         env:
           CI: true
 
-      # 8. Prepare deployment files
+      # 9. Prepare deployment
       - name: Prepare deployment
         id: output
         shell: bash
         run: |
           set -e
 
-          mkdir -p "$RUNNER_TEMP/website"
-
           APP_DIR="${{ steps.project.outputs.dir }}"
+          OUTPUT="$RUNNER_TEMP/website"
+
+          mkdir -p "$OUTPUT"
 
           if [ "${{ steps.project.outputs.type }}" = "node" ]; then
             SOURCE="$APP_DIR/dist"
@@ -149,28 +170,28 @@ jobs:
           fi
 
           if [ ! -f "$SOURCE/index.html" ]; then
-            echo "ERROR: Website index.html not found."
+            echo "ERROR: index.html not found."
             exit 1
           fi
 
-          cp -R "$SOURCE"/. "$RUNNER_TEMP/website/"
+          cp -R "$SOURCE"/. "$OUTPUT"/
 
-          echo "Website contents:"
-          find "$RUNNER_TEMP/website" -maxdepth 3 -type f
+          echo "Deployment files:"
+          find "$OUTPUT" -maxdepth 3 -type f
 
-          echo "dir=$RUNNER_TEMP/website" >> "$GITHUB_OUTPUT"
+          echo "dir=$OUTPUT" >> "$GITHUB_OUTPUT"
 
-      # 9. Configure Pages
+      # 10. Configure GitHub Pages
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      # 10. Upload artifact
+      # 11. Upload website
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ${{ steps.output.outputs.dir }}
 
-  # 11. Deploy
+  # 12. Deploy website
   deploy:
     needs: build
     runs-on: ubuntu-latest
